@@ -12,8 +12,8 @@ app.use((req, res, next) => {
 });
 
 // Middleware
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
 // Routes
 const authRoutes = require("./routes/auth");
