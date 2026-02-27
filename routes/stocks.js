@@ -60,7 +60,7 @@ router.get('/', auth, async (req, res) => {
 router.post('/fetch-prices', auth, async (req, res) => {
     try {
         const stocks = await Stock.find({ userId: req.user.id });
-        const symbols = [...new Set(stocks.map(s => s.symbol))];
+        const symbols = [...new Set(stocks.map(s => s.symbol.trim().toUpperCase()))];
 
         if (symbols.length === 0) {
             return res.json({ success: true, message: 'No stocks to update', updatedStocks: [] });
@@ -147,7 +147,8 @@ router.post('/fetch-prices', auth, async (req, res) => {
 // Buy Stock
 router.post('/buy', auth, async (req, res) => {
     try {
-        const { symbol, price, quantity, name, date } = req.body;
+        let { symbol, price, quantity, name, date } = req.body;
+        symbol = symbol.trim().toUpperCase();
         const buyPrice = parseFloat(price);
         const buyQty = parseInt(quantity);
         const buyDate = date || new Date();
@@ -182,7 +183,7 @@ router.post('/buy', auth, async (req, res) => {
                 totalQuantity: buyQty,
                 investedAmount: totalCost,
                 lastPrice: buyPrice,
-                lastUpdatedAt: buyDate
+                lastUpdatedAt: null // Show "Never" until first refresh
             });
         } else {
             const oldQty = stock.totalQuantity;
@@ -194,7 +195,6 @@ router.post('/buy', auth, async (req, res) => {
             stock.totalQuantity = newQuantity;
             stock.investedAmount = newInvestedAmount;
             stock.lastPrice = buyPrice;
-            stock.lastUpdatedAt = buyDate;
             await stock.save();
         }
 
@@ -217,7 +217,8 @@ router.post('/buy', auth, async (req, res) => {
 // Partial Sell
 router.post('/sell', auth, async (req, res) => {
     try {
-        const { symbol, price, quantity, date } = req.body;
+        let { symbol, price, quantity, date } = req.body;
+        symbol = symbol.trim().toUpperCase();
         const sellPrice = parseFloat(price);
         const sellQty = parseInt(quantity);
         const sellDate = date || new Date();
@@ -288,7 +289,5 @@ router.delete('/:id', auth, async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
-
-module.exports = router;
 
 module.exports = router;

@@ -15,7 +15,15 @@ router.get('/', auth, async (req, res) => {
         const transactions = await WalletTransaction.find({ userId: req.user.id })
             .sort({ createdAt: -1 });
 
-        res.json({ balance, transactions });
+        const mappedTransactions = transactions.map(tx => ({
+            id: tx._id,
+            type: tx.type,
+            amount: tx.amount,
+            description: tx.description,
+            created_at: tx.createdAt
+        }));
+
+        res.json({ balance, transactions: mappedTransactions });
     } catch (err) {
         console.error('Wallet fetch error:', err);
         res.status(500).json({ message: 'Server error' });

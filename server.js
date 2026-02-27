@@ -38,6 +38,8 @@ app.use("/api/portfolio", portfolioRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
 
+const connectDB = require("./config/db");
+
 // 404
 app.use((req, res) => {
     res.status(404).json({ message: `Route ${req.url} not found` });
@@ -48,5 +50,23 @@ app.use((err, req, res, next) => {
     console.error("[SERVER ERROR]", err);
     res.status(500).json({ error: err.message });
 });
+
+const PORT = process.env.PORT || 5010;
+
+const startServer = async () => {
+    try {
+        await connectDB();
+        app.listen(PORT, () => {
+            console.log(`🚀 Server running on port ${PORT}`);
+        });
+    } catch (err) {
+        console.error("❌ Failed to start server:", err);
+        process.exit(1);
+    }
+};
+
+if (process.env.NODE_ENV !== "production") {
+    startServer();
+}
 
 module.exports = app;
