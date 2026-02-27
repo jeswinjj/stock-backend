@@ -8,6 +8,10 @@ const StockSchema = new mongoose.Schema({
     totalQuantity: { type: Number, default: 0 },
     investedAmount: { type: Number, default: 0 },
     lastPrice: { type: Number, default: 0 },
+    dayChange: { type: Number, default: 0 },
+    dayChangePercent: { type: Number, default: 0 },
+    realizedPL: { type: Number, default: 0 },
+    lastUpdatedAt: { type: Date },
     updatedAt: { type: Date, default: Date.now },
 });
 

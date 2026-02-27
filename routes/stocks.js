@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const db = require('../config/db');
+const Stock = require('../models/Stock');
+const Transaction = require('../models/Transaction');
+const Wallet = require('../models/Wallet');
+const WalletTransaction = require('../models/WalletTransaction');
+const PortfolioHistory = require('../models/PortfolioHistory');
 const { getMultiplePricesSequentially } = require('../services/nseService');
 
 // Get all stocks for a user with sorting
@@ -9,31 +13,38 @@ router.get('/', auth, async (req, res) => {
     try {
         const { sort = 'name', order = 'asc' } = req.query;
 
-        let orderBy = 'LOWER(name)';
-        if (sort === 'symbol') orderBy = 'LOWER(symbol)';
-        if (sort === 'pl') orderBy = '((last_price - average_price) / average_price)';
+        let sortConfig = {};
+        if (sort === 'symbol') sortConfig.symbol = order === 'desc' ? -1 : 1;
+        else if (sort === 'name') sortConfig.name = order === 'desc' ? -1 : 1;
+        else if (sort === 'pl') {
+            // Sorting by PL in MongoDB might need aggregation for derived fields, 
+            // but we can sort by symbol/name for now as a fallback or if it's stored.
+            sortConfig.symbol = 1;
+        } else {
+            sortConfig.name = 1;
+        }
 
-        const sortOrder = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-
-        const query = `SELECT * FROM stocks WHERE user_id = ? ORDER BY ${orderBy} ${sortOrder}`;
-        const [stocks] = await db.execute(query, [req.user.id]);
+        const stocks = await Stock.find({ userId: req.user.id }).sort(sortConfig);
 
         const enrichedStocks = stocks.map(stock => {
-            const currentPrice = parseFloat(stock.last_price) || 0;
-            const totalQuantity = parseInt(stock.total_quantity);
-            const averagePrice = parseFloat(stock.average_price) || 0;
+            const currentPrice = stock.lastPrice || 0;
+            const totalQuantity = stock.totalQuantity || 0;
+            const averagePrice = stock.averagePrice || 0;
 
             return {
-                ...stock,
-                userId: stock.user_id,
+                id: stock._id,
+                userId: stock.userId,
+                symbol: stock.symbol,
+                name: stock.name,
                 averagePrice,
                 totalQuantity,
-                investedAmount: parseFloat(stock.invested_amount),
-                realizedPL: parseFloat(stock.realized_pl) || 0,
+                investedAmount: stock.investedAmount,
+                realizedPL: stock.realizedPL || 0,
+                lastPrice: currentPrice,
                 currentPrice,
-                dayChange: parseFloat(stock.day_change) || 0,
-                dayChangePercent: parseFloat(stock.day_change_percent) || 0,
-                lastUpdatedAt: stock.last_updated_at,
+                dayChange: stock.dayChange || 0,
+                dayChangePercent: stock.dayChangePercent || 0,
+                lastUpdatedAt: stock.lastUpdatedAt,
                 unrealizedPL: (currentPrice - averagePrice) * totalQuantity,
                 currentValue: currentPrice * totalQuantity
             };
@@ -48,7 +59,7 @@ router.get('/', auth, async (req, res) => {
 // Fetch latest prices from NSE and update DB
 router.post('/fetch-prices', auth, async (req, res) => {
     try {
-        const [stocks] = await db.execute('SELECT symbol FROM stocks WHERE user_id = ?', [req.user.id]);
+        const stocks = await Stock.find({ userId: req.user.id });
         const symbols = [...new Set(stocks.map(s => s.symbol))];
 
         if (symbols.length === 0) {
@@ -60,25 +71,30 @@ router.post('/fetch-prices', auth, async (req, res) => {
         for (const symbol of symbols) {
             const data = liveData[symbol];
             if (data) {
-                await db.execute(
-                    'UPDATE stocks SET last_price = ?, day_change = ?, day_change_percent = ?, last_updated_at = ? WHERE user_id = ? AND symbol = ?',
-                    [data.price, data.change, data.changePercent, data.lastUpdatedAt, req.user.id, symbol]
+                await Stock.updateOne(
+                    { userId: req.user.id, symbol },
+                    {
+                        lastPrice: data.price,
+                        dayChange: data.change,
+                        dayChangePercent: data.changePercent,
+                        lastUpdatedAt: data.lastUpdatedAt
+                    }
                 );
             }
         }
 
         // --- Calculate Portfolio Snapshot ---
-        const [updatedStocks] = await db.execute('SELECT * FROM stocks WHERE user_id = ?', [req.user.id]);
+        const updatedStocks = await Stock.find({ userId: req.user.id });
 
         let totalInvested = 0;
         let currentValue = 0;
         let totalTodayChange = 0;
 
         updatedStocks.forEach(stock => {
-            const investedAmount = parseFloat(stock.invested_amount) || 0;
-            const lastPrice = parseFloat(stock.last_price) || 0;
-            const quantity = parseInt(stock.total_quantity) || 0;
-            const dayChange = parseFloat(stock.day_change) || 0;
+            const investedAmount = stock.investedAmount || 0;
+            const lastPrice = stock.lastPrice || 0;
+            const quantity = stock.totalQuantity || 0;
+            const dayChange = stock.dayChange || 0;
 
             totalInvested += investedAmount;
             currentValue += (lastPrice * quantity);
@@ -86,35 +102,39 @@ router.post('/fetch-prices', auth, async (req, res) => {
         });
 
         // Get realized P&L
-        const [transactions] = await db.execute(
-            'SELECT SUM(realized_pl) as totalRealized FROM transactions WHERE user_id = ? AND type = "SELL"',
-            [req.user.id]
-        );
-        const totalRealizedPL = parseFloat(transactions[0].totalRealized) || 0;
+        const sellTransactions = await Transaction.find({ userId: req.user.id, type: 'SELL' });
+        const totalRealizedPL = sellTransactions.reduce((sum, tx) => sum + (tx.realizedPL || 0), 0);
+
         const unrealizedPL = currentValue - totalInvested;
         const totalPL = unrealizedPL + totalRealizedPL;
 
-        // Save Snapshot (Prevent duplicate for same day)
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
 
         // Check if snapshot exists for today
-        const [existing] = await db.execute(
-            'SELECT id FROM portfolio_history WHERE user_id = ? AND DATE(date) = ?',
-            [req.user.id, today]
-        );
+        const existing = await PortfolioHistory.findOne({
+            userId: req.user.id,
+            date: { $gte: startOfDay, $lte: endOfDay }
+        });
 
-        if (existing.length > 0) {
-            // Update existing snapshot
-            await db.execute(
-                'UPDATE portfolio_history SET total_invested = ?, current_value = ?, total_pl = ?, day_change = ?, created_at = NOW() WHERE id = ?',
-                [totalInvested, currentValue, totalPL, totalTodayChange, existing[0].id]
-            );
+        if (existing) {
+            existing.totalInvested = totalInvested;
+            existing.currentValue = currentValue;
+            existing.totalPL = totalPL;
+            existing.dayChange = totalTodayChange;
+            existing.date = new Date();
+            await existing.save();
         } else {
-            // Insert new snapshot
-            await db.execute(
-                'INSERT INTO portfolio_history (user_id, date, total_invested, current_value, total_pl, day_change) VALUES (?, NOW(), ?, ?, ?, ?)',
-                [req.user.id, totalInvested, currentValue, totalPL, totalTodayChange]
-            );
+            await PortfolioHistory.create({
+                userId: req.user.id,
+                date: new Date(),
+                totalInvested,
+                currentValue,
+                totalPL,
+                dayChange: totalTodayChange
+            });
         }
 
         res.json({ success: true, message: 'Prices updated and snapshot saved', updatedStocks });
@@ -124,7 +144,7 @@ router.post('/fetch-prices', auth, async (req, res) => {
     }
 });
 
-// Buy Stock (Handles new stock and "Add More")
+// Buy Stock
 router.post('/buy', auth, async (req, res) => {
     try {
         const { symbol, price, quantity, name, date } = req.body;
@@ -134,54 +154,61 @@ router.post('/buy', auth, async (req, res) => {
         const totalCost = buyPrice * buyQty;
 
         // 1. Check Wallet Balance
-        const [wallet] = await db.execute('SELECT balance FROM wallets WHERE user_id = ?', [req.user.id]);
-        if (wallet.length === 0 || parseFloat(wallet[0].balance) < totalCost) {
+        const wallet = await Wallet.findOne({ userId: req.user.id });
+        if (!wallet || wallet.balance < totalCost) {
             return res.status(400).json({ message: 'Insufficient wallet balance' });
         }
 
         // 2. Deduct from Wallet
-        await db.execute('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [totalCost, req.user.id]);
+        wallet.balance -= totalCost;
+        await wallet.save();
 
-        await db.execute(
-            'INSERT INTO wallet_transactions (user_id, type, amount, description) VALUES (?, "BUY", ?, ?)',
-            [req.user.id, totalCost, `Bought ${buyQty} ${symbol} @ ${buyPrice}`]
-        );
+        await WalletTransaction.create({
+            userId: req.user.id,
+            type: 'BUY',
+            amount: totalCost,
+            description: `Bought ${buyQty} ${symbol} @ ${buyPrice}`
+        });
 
-        // 3. Process Stock Purchase (Existing Logic)
-        const [existing] = await db.execute(
-            'SELECT * FROM stocks WHERE user_id = ? AND symbol = ?',
-            [req.user.id, symbol]
-        );
+        // 3. Process Stock Purchase
+        let stock = await Stock.findOne({ userId: req.user.id, symbol });
 
-        if (existing.length === 0) {
-            await db.execute(
-                'INSERT INTO stocks (user_id, symbol, name, average_price, total_quantity, invested_amount, last_price, last_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                [req.user.id, symbol, name || symbol, buyPrice, buyQty, buyPrice * buyQty, buyPrice, buyDate]
-            );
+        if (!stock) {
+            await Stock.create({
+                userId: req.user.id,
+                symbol,
+                name: name || symbol,
+                averagePrice: buyPrice,
+                totalQuantity: buyQty,
+                investedAmount: totalCost,
+                lastPrice: buyPrice,
+                lastUpdatedAt: buyDate
+            });
         } else {
-            const stock = existing[0];
-            const oldQty = parseInt(stock.total_quantity);
-            const oldAvg = parseFloat(stock.average_price);
-
+            const oldQty = stock.totalQuantity;
             const newQuantity = oldQty + buyQty;
-            const newInvestedAmount = parseFloat(stock.invested_amount) + (buyPrice * buyQty);
+            const newInvestedAmount = stock.investedAmount + totalCost;
             const newAvgPrice = newInvestedAmount / newQuantity;
 
-            await db.execute(
-                'UPDATE stocks SET average_price = ?, total_quantity = ?, invested_amount = ?, last_price = ?, last_updated_at = ? WHERE user_id = ? AND symbol = ?',
-                [newAvgPrice, newQuantity, newInvestedAmount, buyPrice, buyDate, req.user.id, symbol]
-            );
+            stock.averagePrice = newAvgPrice;
+            stock.totalQuantity = newQuantity;
+            stock.investedAmount = newInvestedAmount;
+            stock.lastPrice = buyPrice;
+            stock.lastUpdatedAt = buyDate;
+            await stock.save();
         }
 
-        await db.execute(
-            'INSERT INTO transactions (user_id, symbol, type, price, quantity, date) VALUES (?, ?, ?, ?, ?, ?)',
-            [req.user.id, symbol, 'BUY', buyPrice, buyQty, buyDate]
-        );
+        await Transaction.create({
+            userId: req.user.id,
+            symbol,
+            type: 'BUY',
+            price: buyPrice,
+            quantity: buyQty,
+            date: buyDate
+        });
 
         res.json({ message: 'Stock added successfully' });
     } catch (err) {
-        // Rollback wallet deduction if stock purchase fails? (Ideally yes, but simple for now)
-        // In a real app, use database transactions (BEGIN/COMMIT/ROLLBACK)
         console.error("Buy error:", err);
         res.status(500).json({ message: err.message });
     }
@@ -196,46 +223,55 @@ router.post('/sell', auth, async (req, res) => {
         const sellDate = date || new Date();
         const totalSaleAmount = sellPrice * sellQty;
 
-        const [stocks] = await db.execute(
-            'SELECT * FROM stocks WHERE user_id = ? AND symbol = ?',
-            [req.user.id, symbol]
-        );
-        const stock = stocks[0];
+        const stock = await Stock.findOne({ userId: req.user.id, symbol });
 
-        if (!stock || stock.total_quantity < sellQty) {
+        if (!stock || stock.totalQuantity < sellQty) {
             return res.status(400).json({ message: 'Insufficient quantity to sell' });
         }
 
-        const avgPrice = parseFloat(stock.average_price);
+        const avgPrice = stock.averagePrice;
         const realizedPL = (sellPrice - avgPrice) * sellQty;
 
-        const newQuantity = stock.total_quantity - sellQty;
-        const newInvestedAmount = stock.invested_amount - (avgPrice * sellQty);
-        const totalRealizedPL = (parseFloat(stock.realized_pl) || 0) + realizedPL;
+        const newQuantity = stock.totalQuantity - sellQty;
+        const newInvestedAmount = stock.investedAmount - (avgPrice * sellQty);
+        const totalRealizedPL = (stock.realizedPL || 0) + realizedPL;
 
-        // 1. Credit Wallet (Return principal + profit/loss)
-        await db.execute('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [totalSaleAmount, req.user.id]);
+        // 1. Credit Wallet
+        let wallet = await Wallet.findOne({ userId: req.user.id });
+        if (!wallet) {
+            wallet = new Wallet({ userId: req.user.id, balance: 0.00 });
+        }
+        wallet.balance += totalSaleAmount;
+        await wallet.save();
 
         // 2. Add Wallet Transaction
-        const type = realizedPL >= 0 ? 'SELL_PROFIT' : 'SELL_LOSS';
-        await db.execute(
-            'INSERT INTO wallet_transactions (user_id, type, amount, description) VALUES (?, ?, ?, ?)',
-            [req.user.id, type, totalSaleAmount, `Sold ${sellQty} ${symbol} @ ${sellPrice} (P/L: ${realizedPL})`]
-        );
+        const walletTxType = realizedPL >= 0 ? 'SELL' : 'SELL'; // Could use specialized types but schema has SELL
+        await WalletTransaction.create({
+            userId: req.user.id,
+            type: 'SELL',
+            amount: totalSaleAmount,
+            description: `Sold ${sellQty} ${symbol} @ ${sellPrice} (P/L: ${realizedPL})`
+        });
 
         if (newQuantity === 0) {
-            await db.execute('DELETE FROM stocks WHERE id = ?', [stock.id]);
+            await Stock.deleteOne({ _id: stock._id });
         } else {
-            await db.execute(
-                'UPDATE stocks SET total_quantity = ?, invested_amount = ?, realized_pl = ?, updated_at = NOW() WHERE id = ?',
-                [newQuantity, newInvestedAmount, totalRealizedPL, stock.id]
-            );
+            stock.totalQuantity = newQuantity;
+            stock.investedAmount = newInvestedAmount;
+            stock.realizedPL = totalRealizedPL;
+            stock.updatedAt = new Date();
+            await stock.save();
         }
 
-        await db.execute(
-            'INSERT INTO transactions (user_id, symbol, type, price, quantity, realized_pl, date) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [req.user.id, symbol, 'SELL', sellPrice, sellQty, realizedPL, sellDate]
-        );
+        await Transaction.create({
+            userId: req.user.id,
+            symbol,
+            type: 'SELL',
+            price: sellPrice,
+            quantity: sellQty,
+            realizedPL: realizedPL,
+            date: sellDate
+        });
 
         res.json({ message: 'Stock sold successfully', realizedPL });
     } catch (err) {
@@ -246,11 +282,13 @@ router.post('/sell', auth, async (req, res) => {
 
 router.delete('/:id', auth, async (req, res) => {
     try {
-        await db.execute('DELETE FROM stocks WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+        await Stock.deleteOne({ _id: req.params.id, userId: req.user.id });
         res.json({ message: 'Stock removed from portfolio' });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
+
+module.exports = router;
 
 module.exports = router;

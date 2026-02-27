@@ -1,20 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const db = require('../config/db');
+const Wallet = require('../models/Wallet');
+const WalletTransaction = require('../models/WalletTransaction');
 
 // Get Wallet Balance and Transaction History
 router.get('/', auth, async (req, res) => {
     try {
         // Get Balance
-        const [wallet] = await db.execute('SELECT balance FROM wallets WHERE user_id = ?', [req.user.id]);
-        const balance = wallet.length > 0 ? parseFloat(wallet[0].balance) : 0.00;
+        const wallet = await Wallet.findOne({ userId: req.user.id });
+        const balance = wallet ? wallet.balance : 0.00;
 
         // Get Transactions
-        const [transactions] = await db.execute(
-            'SELECT * FROM wallet_transactions WHERE user_id = ? ORDER BY created_at DESC',
-            [req.user.id]
-        );
+        const transactions = await WalletTransaction.find({ userId: req.user.id })
+            .sort({ createdAt: -1 });
 
         res.json({ balance, transactions });
     } catch (err) {
@@ -33,14 +32,23 @@ router.post('/add-funds', auth, async (req, res) => {
     }
 
     try {
-        await db.execute('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [value, req.user.id]);
+        let wallet = await Wallet.findOne({ userId: req.user.id });
+        if (!wallet) {
+            wallet = new Wallet({ userId: req.user.id, balance: 0 });
+        }
 
-        await db.execute(
-            'INSERT INTO wallet_transactions (user_id, type, amount, description) VALUES (?, "CREDIT", ?, "Added funds to wallet")',
-            [req.user.id, value]
-        );
+        wallet.balance += value;
+        await wallet.save();
 
-        res.json({ message: 'Funds added successfully', newBalance: value });
+        const transaction = new WalletTransaction({
+            userId: req.user.id,
+            type: 'CREDIT',
+            amount: value,
+            description: 'Added funds to wallet'
+        });
+        await transaction.save();
+
+        res.json({ message: 'Funds added successfully', newBalance: wallet.balance });
     } catch (err) {
         console.error('Add funds error:', err);
         res.status(500).json({ message: 'Server error' });
@@ -57,19 +65,22 @@ router.post('/withdraw', auth, async (req, res) => {
     }
 
     try {
-        const [wallet] = await db.execute('SELECT balance FROM wallets WHERE user_id = ?', [req.user.id]);
-        const currentBalance = parseFloat(wallet[0].balance);
+        const wallet = await Wallet.findOne({ userId: req.user.id });
 
-        if (currentBalance < value) {
+        if (!wallet || wallet.balance < value) {
             return res.status(400).json({ message: 'Insufficient funds' });
         }
 
-        await db.execute('UPDATE wallets SET balance = balance - ? WHERE user_id = ?', [value, req.user.id]);
+        wallet.balance -= value;
+        await wallet.save();
 
-        await db.execute(
-            'INSERT INTO wallet_transactions (user_id, type, amount, description) VALUES (?, "WITHDRAW", ?, "Withdrew funds from wallet")',
-            [req.user.id, value]
-        );
+        const transaction = new WalletTransaction({
+            userId: req.user.id,
+            type: 'WITHDRAW',
+            amount: value,
+            description: 'Withdrew funds from wallet'
+        });
+        await transaction.save();
 
         res.json({ message: 'Funds withdrawn successfully' });
     } catch (err) {

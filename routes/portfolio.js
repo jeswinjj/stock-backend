@@ -1,33 +1,36 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const db = require('../config/db');
+const Stock = require('../models/Stock');
+const Transaction = require('../models/Transaction');
+const PortfolioHistory = require('../models/PortfolioHistory');
 
 router.get('/summary', auth, async (req, res) => {
-    console.log('GET /api/portfolio/summary hit');
     try {
-        const [stocks] = await db.execute('SELECT * FROM stocks WHERE user_id = ?', [req.user.id]);
+        const stocks = await Stock.find({ userId: req.user.id });
 
         let totalInvested = 0;
         let currentValue = 0;
         let totalTodayChange = 0;
 
         stocks.forEach(stock => {
-            const investedAmount = parseFloat(stock.invested_amount) || 0;
-            const lastPrice = parseFloat(stock.last_price) || 0;
-            const quantity = parseInt(stock.total_quantity) || 0;
-            const dayChange = parseFloat(stock.day_change) || 0;
+            const investedAmount = stock.investedAmount || 0;
+            const lastPrice = stock.lastPrice || 0;
+            const quantity = stock.totalQuantity || 0;
+            const dayChange = stock.dayChange || 0;
 
             totalInvested += investedAmount;
             currentValue += (lastPrice * quantity);
             totalTodayChange += (dayChange * quantity);
         });
 
-        const [transactions] = await db.execute(
-            'SELECT SUM(realized_pl) as totalRealized FROM transactions WHERE user_id = ? AND type = "SELL"',
-            [req.user.id]
-        );
-        const totalRealizedPL = parseFloat(transactions[0].totalRealized) || 0;
+        // Calculate total realized PL from transactions
+        const transactions = await Transaction.find({
+            userId: req.user.id,
+            type: 'SELL'
+        });
+
+        const totalRealizedPL = transactions.reduce((sum, tx) => sum + (tx.realizedPL || 0), 0);
 
         const unrealizedPL = currentValue - totalInvested;
         const totalPL = unrealizedPL + totalRealizedPL;
@@ -50,14 +53,13 @@ router.get('/summary', auth, async (req, res) => {
 });
 
 router.get('/stock-performance', auth, async (req, res) => {
-    console.log('GET /api/portfolio/stock-performance hit');
     try {
-        const [stocks] = await db.execute('SELECT * FROM stocks WHERE user_id = ? ORDER BY LOWER(name) ASC', [req.user.id]);
+        const stocks = await Stock.find({ userId: req.user.id }).sort({ symbol: 1 });
 
         const performance = stocks.map(stock => {
-            const invested = parseFloat(stock.invested_amount) || 0;
-            const currentPrice = parseFloat(stock.last_price) || 0;
-            const quantity = parseInt(stock.total_quantity) || 0;
+            const invested = stock.investedAmount || 0;
+            const currentPrice = stock.lastPrice || 0;
+            const quantity = stock.totalQuantity || 0;
             const currentValue = currentPrice * quantity;
             const pnl = currentValue - invested;
 
@@ -84,33 +86,27 @@ router.get('/history', auth, async (req, res) => {
         const { range = '1M' } = req.query;
         let limit = 30;
 
-        // Simplified range logic for now
         switch (range) {
-            case '1D': limit = 2; break; // Need at least 2 points for a line
+            case '1D': limit = 2; break;
             case '1M': limit = 30; break;
             case '3M': limit = 90; break;
             case '1Y': limit = 365; break;
-            case 'ALL': limit = 10000; break;
+            case 'ALL': limit = 0; break; // 0 means no limit in our find logic
         }
 
-        const query = `
-            SELECT * FROM (
-                SELECT * FROM portfolio_history 
-                WHERE user_id = ? 
-                ORDER BY date DESC 
-                LIMIT ?
-            ) AS sub ORDER BY date ASC
-        `;
+        let query = PortfolioHistory.find({ userId: req.user.id }).sort({ date: -1 });
+        if (limit > 0) {
+            query = query.limit(limit);
+        }
 
-        const [history] = await db.execute(query, [req.user.id, limit]);
-
+        const history = await query;
         const formattedHistory = history.map(record => ({
             date: record.date,
-            totalInvested: parseFloat(record.total_invested),
-            currentValue: parseFloat(record.current_value),
-            totalPL: parseFloat(record.total_pl),
-            dayChange: parseFloat(record.day_change)
-        }));
+            totalInvested: record.totalInvested,
+            currentValue: record.currentValue,
+            totalPL: record.totalPL,
+            dayChange: record.dayChange
+        })).reverse(); // Sort ASC for chart
 
         res.json(formattedHistory);
     } catch (err) {
@@ -118,5 +114,7 @@ router.get('/history', auth, async (req, res) => {
         res.status(500).json({ message: 'Unable to fetch portfolio history' });
     }
 });
+
+module.exports = router;
 
 module.exports = router;

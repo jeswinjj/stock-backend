@@ -1,16 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const db = require('../config/db');
+const User = require('../models/User');
 
 // Toggle privacy (hide/show balance)
 router.post('/toggle-privacy', auth, async (req, res) => {
     try {
         const { hideBalance } = req.body;
-        await db.execute(
-            'UPDATE users SET hide_balance = ? WHERE id = ?',
-            [hideBalance ? 1 : 0, req.user.id]
-        );
+        await User.findByIdAndUpdate(req.user.id, { hideBalance });
         res.json({ success: true, hideBalance });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -20,15 +17,14 @@ router.post('/toggle-privacy', auth, async (req, res) => {
 // Get user profile (with privacy setting)
 router.get('/profile', auth, async (req, res) => {
     try {
-        const [users] = await db.execute('SELECT id, name, email, hide_balance FROM users WHERE id = ?', [req.user.id]);
-        if (users.length === 0) return res.status(404).json({ message: 'User not found' });
+        const user = await User.findById(req.user.id).select('name email hideBalance');
+        if (!user) return res.status(404).json({ message: 'User not found' });
 
-        const user = users[0];
         res.json({
-            id: user.id,
+            id: user._id,
             name: user.name,
             email: user.email,
-            hideBalance: !!user.hide_balance
+            hideBalance: !!user.hideBalance
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
