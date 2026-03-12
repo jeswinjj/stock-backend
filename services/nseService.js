@@ -103,14 +103,24 @@ async function getLivePriceData(symbol) {
  */
 async function getMultiplePricesSequentially(symbols) {
     const results = {};
-    for (const symbol of symbols) {
-        const data = await getLivePriceData(symbol);
-        if (data) {
-            results[symbol] = data;
+    const batchSize = 6;
+
+    for (let i = 0; i < symbols.length; i += batchSize) {
+        const batch = symbols.slice(i, i + batchSize);
+
+        const responses = await Promise.all(
+            batch.map(symbol => getLivePriceData(symbol))
+        );
+
+        responses.forEach((data, idx) => {
+            if (data) results[batch[idx]] = data;
+        });
+
+        if (i + batchSize < symbols.length) {
+            await new Promise(r => setTimeout(r, 400)); // throttle
         }
-        // Add a delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1500));
     }
+
     return results;
 }
 
