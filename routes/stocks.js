@@ -13,20 +13,9 @@ router.get('/', auth, async (req, res) => {
     try {
         const { sort = 'name', order = 'asc' } = req.query;
 
-        let sortConfig = {};
-        if (sort === 'symbol') sortConfig.symbol = order === 'desc' ? -1 : 1;
-        else if (sort === 'name') sortConfig.name = order === 'desc' ? -1 : 1;
-        else if (sort === 'pl') {
-            // Sorting by PL in MongoDB might need aggregation for derived fields, 
-            // but we can sort by symbol/name for now as a fallback or if it's stored.
-            sortConfig.symbol = 1;
-        } else {
-            sortConfig.name = 1;
-        }
+        const stocks = await Stock.find({ userId: req.user.id });
 
-        const stocks = await Stock.find({ userId: req.user.id }).sort(sortConfig);
-
-        const enrichedStocks = stocks.map(stock => {
+        let enrichedStocks = stocks.map(stock => {
             const currentPrice = stock.lastPrice || 0;
             const totalQuantity = stock.totalQuantity || 0;
             const averagePrice = stock.averagePrice || 0;
@@ -44,10 +33,44 @@ router.get('/', auth, async (req, res) => {
                 currentPrice,
                 dayChange: stock.dayChange || 0,
                 dayChangePercent: stock.dayChangePercent || 0,
-                lastUpdatedAt: stock.lastUpdatedAt,
+                lastUpdatedAt: stock.lastUpdatedAt || new Date(0),
                 unrealizedPL: (currentPrice - averagePrice) * totalQuantity,
                 currentValue: currentPrice * totalQuantity
             };
+        });
+
+        // Sort dynamically in memory to support any derived field
+        enrichedStocks.sort((a, b) => {
+            let valA = a[sort];
+            let valB = b[sort];
+
+            // Mapping legacy aliases from frontend
+            if (sort === 'pl') {
+                valA = a.unrealizedPL;
+                valB = b.unrealizedPL;
+            } else if (sort === 'qty') {
+                valA = a.totalQuantity;
+                valB = b.totalQuantity;
+            } else if (sort === 'ltp') {
+                valA = a.currentPrice;
+                valB = b.currentPrice;
+            }
+
+            if (valA === undefined) valA = '';
+            if (valB === undefined) valB = '';
+
+            if (typeof valA === 'string' && typeof valB === 'string') {
+                return order === 'desc'
+                    ? valB.localeCompare(valA)
+                    : valA.localeCompare(valB);
+            }
+
+            // Handle date objects
+            if (valA instanceof Date && valB instanceof Date) {
+                return order === 'desc' ? valB.getTime() - valA.getTime() : valA.getTime() - valB.getTime();
+            }
+
+            return order === 'desc' ? Number(valB) - Number(valA) : Number(valA) - Number(valB);
         });
 
         res.json(enrichedStocks);
