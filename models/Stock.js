@@ -15,6 +15,4 @@ const StockSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
 });
 
-StockSchema.index({ userId: 1, symbol: 1 }, { unique: true });
-
 module.exports = mongoose.model('Stock', StockSchema);

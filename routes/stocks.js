@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const Stock = require('../models/Stock');
@@ -169,6 +170,9 @@ router.post('/fetch-prices', auth, async (req, res) => {
 
 // Buy Stock
 router.post('/buy', auth, async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
         let { symbol, price, quantity, name, date } = req.body;
         symbol = symbol.trim().toUpperCase();
@@ -177,28 +181,42 @@ router.post('/buy', auth, async (req, res) => {
         const buyDate = date || new Date();
         const totalCost = buyPrice * buyQty;
 
+        // Validation
+        if (!symbol || buyQty <= 0 || buyPrice <= 0) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Invalid symbol, quantity, or price' });
+        }
+
         // 1. Check Wallet Balance
-        const wallet = await Wallet.findOne({ userId: req.user.id });
+        const wallet = await Wallet.findOne({ userId: req.user.id }).session(session);
         if (!wallet || wallet.balance < totalCost) {
+            await session.abortTransaction();
+            session.endSession();
             return res.status(400).json({ message: 'Insufficient wallet balance' });
         }
 
         // 2. Deduct from Wallet
         wallet.balance -= totalCost;
-        await wallet.save();
+        await wallet.save({ session });
 
-        await WalletTransaction.create({
+        await WalletTransaction.create([{
             userId: req.user.id,
             type: 'BUY',
+            category: 'TRADE',
             amount: totalCost,
+            symbol,
+            quantity: buyQty,
+            buyPrice: buyPrice,
+            balanceAfter: wallet.balance,
             description: `Bought ${buyQty} ${symbol} @ ${buyPrice}`
-        });
+        }], { session });
 
         // 3. Process Stock Purchase
-        let stock = await Stock.findOne({ userId: req.user.id, symbol });
+        let stock = await Stock.findOne({ userId: req.user.id, symbol }).session(session);
 
         if (!stock) {
-            await Stock.create({
+            await Stock.create([{
                 userId: req.user.id,
                 symbol,
                 name: name || symbol,
@@ -206,8 +224,8 @@ router.post('/buy', auth, async (req, res) => {
                 totalQuantity: buyQty,
                 investedAmount: totalCost,
                 lastPrice: buyPrice,
-                lastUpdatedAt: null // Show "Never" until first refresh
-            });
+                lastUpdatedAt: null
+            }], { session });
         } else {
             const oldQty = stock.totalQuantity;
             const newQuantity = oldQty + buyQty;
@@ -218,20 +236,24 @@ router.post('/buy', auth, async (req, res) => {
             stock.totalQuantity = newQuantity;
             stock.investedAmount = newInvestedAmount;
             stock.lastPrice = buyPrice;
-            await stock.save();
+            await stock.save({ session });
         }
 
-        await Transaction.create({
+        await Transaction.create([{
             userId: req.user.id,
             symbol,
             type: 'BUY',
             price: buyPrice,
             quantity: buyQty,
             date: buyDate
-        });
+        }], { session });
 
+        await session.commitTransaction();
+        session.endSession();
         res.json({ message: 'Stock added successfully' });
     } catch (err) {
+        await session.abortTransaction();
+        session.endSession();
         console.error("Buy error:", err);
         res.status(500).json({ message: err.message });
     }
@@ -239,6 +261,9 @@ router.post('/buy', auth, async (req, res) => {
 
 // Partial Sell
 router.post('/sell', auth, async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
         let { symbol, price, quantity, date } = req.body;
         symbol = symbol.trim().toUpperCase();
@@ -247,47 +272,65 @@ router.post('/sell', auth, async (req, res) => {
         const sellDate = date || new Date();
         const totalSaleAmount = sellPrice * sellQty;
 
-        const stock = await Stock.findOne({ userId: req.user.id, symbol });
+        // Validation
+        if (!symbol || sellQty <= 0 || sellPrice <= 0) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Invalid symbol, quantity, or price' });
+        }
+
+        const stock = await Stock.findOne({ userId: req.user.id, symbol }).session(session);
 
         if (!stock || stock.totalQuantity < sellQty) {
+            await session.abortTransaction();
+            session.endSession();
             return res.status(400).json({ message: 'Insufficient quantity to sell' });
         }
 
         const avgPrice = stock.averagePrice;
-        const realizedPL = (sellPrice - avgPrice) * sellQty;
+        // Smoothed realized P/L calculation to prevent floating point issues
+        const realizedPL = Number(((sellPrice - avgPrice) * sellQty).toFixed(2));
 
         const newQuantity = stock.totalQuantity - sellQty;
         const newInvestedAmount = stock.investedAmount - (avgPrice * sellQty);
         const totalRealizedPL = (stock.realizedPL || 0) + realizedPL;
 
         // 1. Credit Wallet
-        let wallet = await Wallet.findOne({ userId: req.user.id });
+        let wallet = await Wallet.findOne({ userId: req.user.id }).session(session);
         if (!wallet) {
             wallet = new Wallet({ userId: req.user.id, balance: 0.00 });
         }
         wallet.balance += totalSaleAmount;
-        await wallet.save();
+        await wallet.save({ session });
 
         // 2. Add Wallet Transaction
-        const walletTxType = realizedPL >= 0 ? 'SELL' : 'SELL'; // Could use specialized types but schema has SELL
-        await WalletTransaction.create({
+        const walletTxType = realizedPL >= 0 ? 'SELL_PROFIT' : 'SELL_LOSS';
+        await WalletTransaction.create([{
             userId: req.user.id,
-            type: 'SELL',
+            type: walletTxType,
+            category: 'TRADE',
             amount: totalSaleAmount,
-            description: `Sold ${sellQty} ${symbol} @ ${sellPrice} (P/L: ${realizedPL})`
-        });
+            symbol,
+            quantity: sellQty,
+            sellPrice: sellPrice,
+            costPrice: avgPrice,
+            totalPL: realizedPL,
+            avgPriceSnapshot: avgPrice,
+            balanceAfter: wallet.balance,
+            description: `Sold ${sellQty} ${symbol} @ ${sellPrice} (${realizedPL >= 0 ? 'Profit' : 'Loss'}: ${Math.abs(realizedPL).toFixed(2)})`
+        }], { session });
 
         if (newQuantity === 0) {
-            await Stock.deleteOne({ _id: stock._id });
+            await Stock.deleteOne({ _id: stock._id }).session(session);
         } else {
             stock.totalQuantity = newQuantity;
             stock.investedAmount = newInvestedAmount;
             stock.realizedPL = totalRealizedPL;
             stock.updatedAt = new Date();
-            await stock.save();
+            await stock.save({ session });
         }
 
-        await Transaction.create({
+        await Transaction.create([{
             userId: req.user.id,
             symbol,
             type: 'SELL',
@@ -295,10 +338,14 @@ router.post('/sell', auth, async (req, res) => {
             quantity: sellQty,
             realizedPL: realizedPL,
             date: sellDate
-        });
+        }], { session });
 
+        await session.commitTransaction();
+        session.endSession();
         res.json({ message: 'Stock sold successfully', realizedPL });
     } catch (err) {
+        await session.abortTransaction();
+        session.endSession();
         console.error("Sell error:", err);
         res.status(500).json({ message: err.message });
     }
