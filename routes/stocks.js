@@ -7,7 +7,34 @@ const Transaction = require('../models/Transaction');
 const Wallet = require('../models/Wallet');
 const WalletTransaction = require('../models/WalletTransaction');
 const PortfolioHistory = require('../models/PortfolioHistory');
+const StockMaster = require('../models/StockMaster');
 const { getMultiplePricesSequentially } = require('../services/nseService');
+
+// Search Stocks for autocomplete
+router.get('/search', auth, async (req, res) => {
+    try {
+        const query = req.query.q;
+        if (!query || query.length < 1) {
+            return res.json([]);
+        }
+
+        // Search by symbol (starting with) or name (containing)
+        const stocks = await StockMaster.find({
+            $or: [
+                { symbol: { $regex: `^${query}`, $options: 'i' } },
+                { name: { $regex: query, $options: 'i' } }
+            ]
+        })
+        .limit(10)
+        .select('symbol name series isin');
+
+        res.json(stocks);
+    } catch (err) {
+        console.error('Stock search error:', err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
 
 // Get all stocks for a user with sorting
 router.get('/', auth, async (req, res) => {

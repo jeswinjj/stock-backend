@@ -39,6 +39,8 @@ app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
 
 const connectDB = require("./config/db");
+const { initScheduler } = require("./services/scheduler");
+
 
 // 404
 app.use((req, res) => {
@@ -56,7 +58,9 @@ const PORT = process.env.PORT || 5010;
 const startServer = async () => {
     try {
         await connectDB();
+        initScheduler();
         app.listen(PORT, () => {
+
             console.log(`🚀 Server running on port ${PORT}`);
         });
     } catch (err) {

@@ -1,4 +1,7 @@
 const axios = require('axios');
+const csv = require('csv-parser');
+const { Readable } = require('stream');
+
 
 const BASE_URL = 'https://www.nseindia.com';
 const QUOTE_API = `${BASE_URL}/api/quote-equity?symbol=`;
@@ -124,7 +127,66 @@ async function getMultiplePricesSequentially(symbols) {
     return results;
 }
 
+/**
+ * Fetch all NSE equities from the official CSV list
+ */
+async function getAllNSEStocks() {
+    const url = 'https://archives.nseindia.com/content/equities/EQUITY_L.csv';
+    
+    try {
+        console.log(`Fetching from: ${url}`);
+        const response = await axios.get(url);
+        console.log(`Response status: ${response.status}`);
+        console.log(`Response data type: ${typeof response.data}`);
+        console.log(`Response data length: ${response.data?.length}`);
+        
+        if (!response.data) {
+            throw new Error('Empty response from NSE');
+        }
+
+        const results = [];
+        let rowCount = 0;
+
+        return new Promise((resolve, reject) => {
+            Readable.from(response.data)
+                .pipe(csv())
+                .on('data', (row) => {
+                    // Trim keys and values
+                    const cleanRow = {};
+                    Object.keys(row).forEach(key => {
+                        cleanRow[key.trim()] = row[key]?.trim();
+                    });
+
+                    const symbol = cleanRow['SYMBOL'];
+                    const name = cleanRow['NAME OF COMPANY'];
+                    const series = cleanRow['SERIES'];
+                    const isin = cleanRow['ISIN NUMBER'] || cleanRow['ISIN'];
+
+                    if (series === 'EQ') {
+                        results.push({
+                            symbol,
+                            name,
+                            series,
+                            isin
+                        });
+                    }
+                })
+
+                .on('end', () => resolve(results))
+                .on('error', (err) => {
+                    console.error('Error parsing NSE CSV:', err);
+                    reject(err);
+                });
+        });
+    } catch (err) {
+        console.error('Error fetching NSE equity list:', err.message);
+        throw err;
+    }
+}
+
 module.exports = {
     getLivePriceData,
-    getMultiplePricesSequentially
+    getMultiplePricesSequentially,
+    getAllNSEStocks
 };
+
