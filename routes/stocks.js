@@ -25,8 +25,8 @@ router.get('/search', auth, async (req, res) => {
                 { name: { $regex: query, $options: 'i' } }
             ]
         })
-        .limit(10)
-        .select('symbol name series isin');
+            .limit(10)
+            .select('symbol name series isin');
 
         res.json(stocks);
     } catch (err) {
@@ -47,6 +47,8 @@ router.get('/', auth, async (req, res) => {
             const currentPrice = stock.lastPrice || 0;
             const totalQuantity = stock.totalQuantity || 0;
             const averagePrice = stock.averagePrice || 0;
+            const investedAmount = stock.investedAmount || 0;
+            const unrealizedPL = (currentPrice - averagePrice) * totalQuantity;
 
             return {
                 id: stock._id,
@@ -55,14 +57,15 @@ router.get('/', auth, async (req, res) => {
                 name: stock.name,
                 averagePrice,
                 totalQuantity,
-                investedAmount: stock.investedAmount,
+                investedAmount,
                 realizedPL: stock.realizedPL || 0,
                 lastPrice: currentPrice,
                 currentPrice,
                 dayChange: stock.dayChange || 0,
                 dayChangePercent: stock.dayChangePercent || 0,
                 lastUpdatedAt: stock.lastUpdatedAt || new Date(0),
-                unrealizedPL: (currentPrice - averagePrice) * totalQuantity,
+                unrealizedPL,
+                pnlPercentage: investedAmount > 0 ? (unrealizedPL / investedAmount) * 100 : 0,
                 currentValue: currentPrice * totalQuantity
             };
         });
@@ -74,8 +77,8 @@ router.get('/', auth, async (req, res) => {
 
             // Mapping legacy aliases from frontend
             if (sort === 'pl') {
-                valA = a.unrealizedPL;
-                valB = b.unrealizedPL;
+                valA = a.pnlPercentage;
+                valB = b.pnlPercentage;
             } else if (sort === 'qty') {
                 valA = a.totalQuantity;
                 valB = b.totalQuantity;
