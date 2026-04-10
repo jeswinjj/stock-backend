@@ -107,88 +107,13 @@ router.get('/', auth, async (req, res) => {
     }
 });
 
+const { refreshUserPortfolioPrices } = require('../services/portfolioService');
+
 // Fetch latest prices from NSE and update DB
 router.post('/fetch-prices', auth, async (req, res) => {
     try {
-        const stocks = await Stock.find({ userId: req.user.id });
-        const symbols = [...new Set(stocks.map(s => s.symbol.trim().toUpperCase()))];
-
-        if (symbols.length === 0) {
-            return res.json({ success: true, message: 'No stocks to update', updatedStocks: [] });
-        }
-
-        const liveData = await getMultiplePricesSequentially(symbols);
-
-        for (const symbol of symbols) {
-            const data = liveData[symbol];
-            if (data) {
-                await Stock.updateOne(
-                    { userId: req.user.id, symbol },
-                    {
-                        lastPrice: data.price,
-                        dayChange: data.change,
-                        dayChangePercent: data.changePercent,
-                        lastUpdatedAt: data.lastUpdatedAt
-                    }
-                );
-            }
-        }
-
-        // --- Calculate Portfolio Snapshot ---
-        const updatedStocks = await Stock.find({ userId: req.user.id });
-
-        let totalInvested = 0;
-        let currentValue = 0;
-        let totalTodayChange = 0;
-
-        updatedStocks.forEach(stock => {
-            const investedAmount = stock.investedAmount || 0;
-            const lastPrice = stock.lastPrice || 0;
-            const quantity = stock.totalQuantity || 0;
-            const dayChange = stock.dayChange || 0;
-
-            totalInvested += investedAmount;
-            currentValue += (lastPrice * quantity);
-            totalTodayChange += (dayChange * quantity);
-        });
-
-        // Get realized P&L
-        const sellTransactions = await Transaction.find({ userId: req.user.id, type: 'SELL' });
-        const totalRealizedPL = sellTransactions.reduce((sum, tx) => sum + (tx.realizedPL || 0), 0);
-
-        const unrealizedPL = currentValue - totalInvested;
-        const totalPL = unrealizedPL + totalRealizedPL;
-
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
-
-        // Check if snapshot exists for today
-        const existing = await PortfolioHistory.findOne({
-            userId: req.user.id,
-            date: { $gte: startOfDay, $lte: endOfDay }
-        });
-
-        if (existing) {
-            existing.totalInvested = totalInvested;
-            existing.currentValue = currentValue;
-            existing.totalPL = totalPL;
-            existing.dayChange = totalTodayChange;
-            existing.date = new Date();
-            await existing.save();
-        } else {
-            await PortfolioHistory.create({
-                userId: req.user.id,
-                date: new Date(),
-                totalInvested,
-                currentValue,
-                totalPL,
-                dayChange: totalTodayChange
-            });
-        }
-
-        res.json({ success: true, message: 'Prices updated and snapshot saved', updatedStocks });
+        const result = await refreshUserPortfolioPrices(req.user.id);
+        res.json(result);
     } catch (err) {
         console.error('Fetch prices error:', err);
         res.status(500).json({ success: false, message: 'Unable to fetch prices' });

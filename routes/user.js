@@ -14,17 +14,29 @@ router.post('/toggle-privacy', auth, async (req, res) => {
     }
 });
 
+// Toggle auto-refresh preference
+router.post('/toggle-auto-refresh', auth, async (req, res) => {
+    try {
+        const { autoRefreshEnabled } = req.body;
+        await User.findByIdAndUpdate(req.user.id, { autoRefreshEnabled });
+        res.json({ success: true, autoRefreshEnabled });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // Get user profile (with privacy setting)
 router.get('/profile', auth, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select('name email hideBalance');
+        const user = await User.findById(req.user.id).select('name email hideBalance autoRefreshEnabled');
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         res.json({
             id: user._id,
             name: user.name,
             email: user.email,
-            hideBalance: !!user.hideBalance
+            hideBalance: !!user.hideBalance,
+            autoRefreshEnabled: !!user.autoRefreshEnabled
         });
     } catch (err) {
         res.status(500).json({ message: err.message });

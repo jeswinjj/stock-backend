@@ -8,6 +8,7 @@ const UserSchema = new mongoose.Schema({
   resetToken: { type: String },
   resetTokenExpiry: { type: Date },
   hideBalance: { type: Boolean, default: false },
+  autoRefreshEnabled: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
 });
 
