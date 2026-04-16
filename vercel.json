@@ -16,5 +16,15 @@
             },
             "dest": "/api/index.js"
         }
+    ],
+    "crons": [
+        {
+            "path": "/api/cron/portfolio-refresh",
+            "schedule": "30 10 * * 1-5"
+        },
+        {
+            "path": "/api/cron/nse-sync",
+            "schedule": "30 18 * * 6"
+        }
     ]
 }
