@@ -66,7 +66,8 @@ router.get('/', auth, async (req, res) => {
                 lastUpdatedAt: stock.lastUpdatedAt || new Date(0),
                 unrealizedPL,
                 pnlPercentage: investedAmount > 0 ? (unrealizedPL / investedAmount) * 100 : 0,
-                currentValue: currentPrice * totalQuantity
+                currentValue: currentPrice * totalQuantity,
+                targets: stock.targets || []
             };
         });
 
@@ -311,6 +312,51 @@ router.delete('/:id', auth, async (req, res) => {
         await Stock.deleteOne({ _id: req.params.id, userId: req.user.id });
         res.json({ message: 'Stock removed from portfolio' });
     } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Add a target to a stock
+router.post('/:id/targets', auth, async (req, res) => {
+    try {
+        const { price } = req.body;
+        if (!price || isNaN(price) || price <= 0) {
+            return res.status(400).json({ message: 'Valid positive price is required' });
+        }
+
+        const stock = await Stock.findOne({ _id: req.params.id, userId: req.user.id });
+        if (!stock) {
+            return res.status(404).json({ message: 'Stock not found' });
+        }
+
+        if (stock.targets && stock.targets.length >= 3) {
+            return res.status(400).json({ message: 'Maximum 3 targets allowed per stock' });
+        }
+
+        stock.targets.push({ price: parseFloat(price) });
+        await stock.save();
+
+        res.json({ message: 'Target added successfully', targets: stock.targets });
+    } catch (err) {
+        console.error("Add target error:", err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// Delete a target from a stock
+router.delete('/:id/targets/:targetId', auth, async (req, res) => {
+    try {
+        const stock = await Stock.findOne({ _id: req.params.id, userId: req.user.id });
+        if (!stock) {
+            return res.status(404).json({ message: 'Stock not found' });
+        }
+
+        stock.targets = stock.targets.filter(t => t._id.toString() !== req.params.targetId);
+        await stock.save();
+
+        res.json({ message: 'Target deleted successfully', targets: stock.targets });
+    } catch (err) {
+        console.error("Delete target error:", err);
         res.status(500).json({ message: err.message });
     }
 });

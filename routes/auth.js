@@ -29,8 +29,8 @@ router.post('/register', async (req, res) => {
         const wallet = new Wallet({ userId: user._id, balance: 0.00 });
         await wallet.save();
 
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
-        res.json({ token, user: { id: user._id, name, email } });
+        const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET);
+        res.json({ token, user: { id: user._id, name, email, role: user.role } });
     } catch (err) {
         console.error('Registration error:', err);
         res.status(500).json({ message: err.message });
@@ -47,13 +47,14 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+        const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET);
         res.json({
             token,
             user: {
                 id: user._id,
                 name: user.name,
                 email: user.email,
+                role: user.role,
                 hideBalance: !!user.hideBalance
             }
         });
