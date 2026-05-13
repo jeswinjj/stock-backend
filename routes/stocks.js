@@ -334,6 +334,8 @@ router.post('/:id/targets', auth, async (req, res) => {
         }
 
         stock.targets.push({ price: parseFloat(price) });
+        // Sort targets by price ascending
+        stock.targets.sort((a, b) => a.price - b.price);
         await stock.save();
 
         res.json({ message: 'Target added successfully', targets: stock.targets });
