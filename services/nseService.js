@@ -7,6 +7,7 @@ const BASE_URL = 'https://www.nseindia.com';
 const QUOTE_API = `${BASE_URL}/api/quote-equity?symbol=`;
 
 let cookies = '';
+let sessionPromise = null;
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -18,40 +19,50 @@ const HEADERS = {
 
 /**
  * Initialize session with NSE India to get cookies
+ * Uses a promise lock to prevent multiple concurrent initializations
  */
 async function initSession() {
-    try {
-        console.log('Initializing NSE Session...');
-        const response = await axios.get(BASE_URL, {
-            headers: HEADERS,
-            timeout: 10000
-        });
+    if (cookies) return;
+    if (sessionPromise) return sessionPromise;
 
-        const setCookie = response.headers['set-cookie'];
-        if (setCookie) {
-            cookies = setCookie.map(cookie => cookie.split(';')[0]).join('; ');
-            console.log('NSE Session initialized successfully');
-        } else {
-            console.warn('NSE Session initialized but no cookies received');
-        }
-    } catch (err) {
-        console.error('Failed to initialize NSE session:', err.message);
-        // Sometimes the main page fails but we can still try to get cookies from any subpage
+    sessionPromise = (async () => {
         try {
-            const altResponse = await axios.get(`${BASE_URL}/get-quotes/equity?symbol=RELIANCE`, {
+            console.log(`[${new Date().toISOString()}] Initializing NSE Session...`);
+            const response = await axios.get(BASE_URL, {
                 headers: HEADERS,
                 timeout: 10000
             });
-            const altCookie = altResponse.headers['set-cookie'];
-            if (altCookie) {
-                cookies = altCookie.map(cookie => cookie.split(';')[0]).join('; ');
-                console.log('NSE Session initialized successfully (Alternative)');
+
+            const setCookie = response.headers['set-cookie'];
+            if (setCookie) {
+                cookies = setCookie.map(cookie => cookie.split(';')[0]).join('; ');
+                console.log(`[${new Date().toISOString()}] NSE Session initialized successfully`);
+            } else {
+                console.warn(`[${new Date().toISOString()}] NSE Session initialized but no cookies received`);
             }
-        } catch (altErr) {
-            console.error('Alternative session init failed:', altErr.message);
-            throw new Error('NSE Session Initialization Failed');
+        } catch (err) {
+            console.error(`[${new Date().toISOString()}] Failed to initialize NSE session:`, err.message);
+            // Sometimes the main page fails but we can still try to get cookies from any subpage
+            try {
+                const altResponse = await axios.get(`${BASE_URL}/get-quotes/equity?symbol=RELIANCE`, {
+                    headers: HEADERS,
+                    timeout: 10000
+                });
+                const altCookie = altResponse.headers['set-cookie'];
+                if (altCookie) {
+                    cookies = altCookie.map(cookie => cookie.split(';')[0]).join('; ');
+                    console.log(`[${new Date().toISOString()}] NSE Session initialized successfully (Alternative)`);
+                }
+            } catch (altErr) {
+                console.error(`[${new Date().toISOString()}] Alternative session init failed:`, altErr.message);
+                throw new Error('NSE Session Initialization Failed');
+            }
+        } finally {
+            sessionPromise = null;
         }
-    }
+    })();
+
+    return sessionPromise;
 }
 
 /**
@@ -132,14 +143,14 @@ async function getMultiplePricesSequentially(symbols) {
  */
 async function getAllNSEStocks() {
     const url = 'https://archives.nseindia.com/content/equities/EQUITY_L.csv';
-    
+
     try {
         console.log(`Fetching from: ${url}`);
         const response = await axios.get(url);
         console.log(`Response status: ${response.status}`);
         console.log(`Response data type: ${typeof response.data}`);
         console.log(`Response data length: ${response.data?.length}`);
-        
+
         if (!response.data) {
             throw new Error('Empty response from NSE');
         }

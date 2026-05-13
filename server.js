@@ -7,7 +7,7 @@ const app = express();
 
 // Logging
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - URL: ${req.url}`);
     next();
 });
 
@@ -53,28 +53,48 @@ const pLimit = require('p-limit');
 // 🔐 CRON AUTH MIDDLEWARE
 function verifyCron(req, res, next) {
     const auth = req.headers['authorization'];
-    // Vercel Cron sends Bearer token. Check if it matches our secret.
-    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-        console.warn(`[CRON] Unauthorized attempt from ${req.ip}`);
-        return res.status(401).json({ error: 'Unauthorized' });
+    const vercelCron = req.headers['x-vercel-cron'];
+
+    // Vercel Cron sends x-vercel-cron: 1 header.
+    // Also allow manual trigger via Bearer token for testing.
+    if (vercelCron === '1' || auth === `Bearer ${process.env.CRON_SECRET}`) {
+        return next();
     }
-    next();
+
+    console.warn(`[CRON] Unauthorized attempt from ${req.ip}. Headers:`, JSON.stringify(req.headers));
+    return res.status(401).json({ error: 'Unauthorized' });
 }
 
 app.get('/api/cron/portfolio-refresh', verifyCron, async (req, res) => {
     try {
-        console.log('Running portfolio refresh cron...');
+        console.log(`[${new Date().toISOString()}] Starting portfolio refresh cron...`);
         const users = await User.find({ autoRefreshEnabled: true }).lean();
-        console.log(`Users to refresh: ${users.length}`);
+        console.log(`[${new Date().toISOString()}] Users to refresh: ${users.length} (${users.map(u => u.email).join(', ')})`);
+
+        if (users.length === 0) {
+            return res.json({ success: true, message: 'No users have auto-refresh enabled.' });
+        }
 
         const limit = pLimit(3);
-        await Promise.all(
+        const results = await Promise.allSettled(
             users.map(user =>
-                limit(() => refreshUserPortfolioPrices(user._id))
+                limit(async () => {
+                    console.log(`[CRON] Refreshing portfolio for: ${user.email}`);
+                    return refreshUserPortfolioPrices(user._id);
+                })
             )
         );
 
-        res.json({ success: true, message: `Refreshed ${users.length} portfolios` });
+        const successes = results.filter(r => r.status === 'fulfilled').length;
+        const failures = results.filter(r => r.status === 'rejected').length;
+
+        console.log(`[${new Date().toISOString()}] Portfolio refresh cron complete. Success: ${successes}, Failures: ${failures}`);
+
+        res.json({ 
+            success: true, 
+            message: `Refreshed ${successes} portfolios, ${failures} failed.`,
+            details: results.map(r => r.status === 'rejected' ? r.reason : 'Success')
+        });
     } catch (err) {
         console.error('Portfolio refresh cron failed:', err);
         res.status(500).json({ error: err.message });
@@ -83,9 +103,10 @@ app.get('/api/cron/portfolio-refresh', verifyCron, async (req, res) => {
 
 app.get('/api/cron/nse-sync', verifyCron, async (req, res) => {
     try {
-        console.log('Running NSE sync cron...');
-        await syncNSEStocks();
-        res.json({ success: true, message: 'NSE stocks synchronized' });
+        console.log(`[${new Date().toISOString()}] Starting NSE sync cron...`);
+        const result = await syncNSEStocks();
+        console.log(`[${new Date().toISOString()}] NSE sync cron complete:`, JSON.stringify(result));
+        res.json({ success: true, message: 'NSE stocks synchronized', data: result });
     } catch (err) {
         console.error('NSE sync cron failed:', err);
         res.status(500).json({ error: err.message });
@@ -97,7 +118,12 @@ const connectDB = require("./config/db");
 
 // 404
 app.use((req, res) => {
-    res.status(404).json({ message: `Route ${req.url} not found` });
+    console.warn(`[404] ${req.method} ${req.originalUrl} not matched. current req.url: ${req.url}`);
+    res.status(404).json({ 
+        message: `Route ${req.url} not found`,
+        originalUrl: req.originalUrl,
+        path: req.path
+    });
 });
 
 // Error handler

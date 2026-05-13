@@ -7,5 +7,9 @@ module.exports = async (req, res) => {
     } catch (err) {
         console.error("Database connection error in serverless function:", err);
     }
+    
+    // Log incoming request info for Vercel debugging
+    console.log(`[VERCEL] ${req.method} ${req.url} (originalUrl: ${req.originalUrl})`);
+    
     return app(req, res);
 };
