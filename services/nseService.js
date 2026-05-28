@@ -1,69 +1,11 @@
 const axios = require('axios');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
+const YahooFinance = require('yahoo-finance2').default;
 
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
 const BASE_URL = 'https://www.nseindia.com';
-const QUOTE_API = `${BASE_URL}/api/quote-equity?symbol=`;
-
-let cookies = '';
-let sessionPromise = null;
-
-const HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-};
-
-/**
- * Initialize session with NSE India to get cookies
- * Uses a promise lock to prevent multiple concurrent initializations
- */
-async function initSession() {
-    if (cookies) return;
-    if (sessionPromise) return sessionPromise;
-
-    sessionPromise = (async () => {
-        try {
-            console.log(`[${new Date().toISOString()}] Initializing NSE Session...`);
-            const response = await axios.get(BASE_URL, {
-                headers: HEADERS,
-                timeout: 10000
-            });
-
-            const setCookie = response.headers['set-cookie'];
-            if (setCookie) {
-                cookies = setCookie.map(cookie => cookie.split(';')[0]).join('; ');
-                console.log(`[${new Date().toISOString()}] NSE Session initialized successfully`);
-            } else {
-                console.warn(`[${new Date().toISOString()}] NSE Session initialized but no cookies received`);
-            }
-        } catch (err) {
-            console.error(`[${new Date().toISOString()}] Failed to initialize NSE session:`, err.message);
-            // Sometimes the main page fails but we can still try to get cookies from any subpage
-            try {
-                const altResponse = await axios.get(`${BASE_URL}/get-quotes/equity?symbol=RELIANCE`, {
-                    headers: HEADERS,
-                    timeout: 10000
-                });
-                const altCookie = altResponse.headers['set-cookie'];
-                if (altCookie) {
-                    cookies = altCookie.map(cookie => cookie.split(';')[0]).join('; ');
-                    console.log(`[${new Date().toISOString()}] NSE Session initialized successfully (Alternative)`);
-                }
-            } catch (altErr) {
-                console.error(`[${new Date().toISOString()}] Alternative session init failed:`, altErr.message);
-                throw new Error('NSE Session Initialization Failed');
-            }
-        } finally {
-            sessionPromise = null;
-        }
-    })();
-
-    return sessionPromise;
-}
 
 /**
  * Fetch live price for a single NSE symbol
@@ -71,43 +13,27 @@ async function initSession() {
  */
 async function getLivePriceData(symbol) {
     try {
-        if (!cookies) await initSession();
-
-        const url = `${QUOTE_API}${encodeURIComponent(symbol)}`;
-        const response = await axios.get(url, {
-            headers: {
-                ...HEADERS,
-                'Accept': '*/*',
-                'Cookie': cookies,
-                'Referer': `${BASE_URL}/get-quotes/equity?symbol=${encodeURIComponent(symbol)}`,
-                'Host': 'www.nseindia.com',
-                'X-Requested-With': 'XMLHttpRequest'
-            },
-            timeout: 8000
-        });
-
-        const data = response.data;
-        if (!data.priceInfo || !data.priceInfo.lastPrice) {
-            console.error(`Invalid data structure from NSE for ${symbol}`);
-            return null;
+        const cleanSymbol = symbol.trim().toUpperCase();
+        const yahooSymbol = cleanSymbol.endsWith('.NS') ? cleanSymbol : `${cleanSymbol}.NS`;
+        
+        let result;
+        try {
+            result = await yahooFinance.quote(yahooSymbol);
+        } catch (e) {
+            // Try without .NS suffix if the first try fails
+            result = await yahooFinance.quote(cleanSymbol);
         }
+
+        if (!result) return null;
 
         return {
-            price: data.priceInfo.lastPrice,
-            change: data.priceInfo.change || 0,
-            changePercent: data.priceInfo.pChange || 0,
-            lastUpdatedAt: new Date()
+            price: result.regularMarketPrice,
+            change: result.regularMarketChange || 0,
+            changePercent: result.regularMarketChangePercent || 0,
+            lastUpdatedAt: result.regularMarketTime || new Date()
         };
     } catch (err) {
-        console.error(`Error fetching NSE price for ${symbol}:`, err.message);
-
-        // If 401/403, retry session initialization once
-        if (err.response && (err.response.status === 401 || err.response.status === 403)) {
-            console.log('Session expired, re-initializing...');
-            cookies = '';
-            // We don't recurse here to prevent infinite loop, 
-            // the next call will re-init.
-        }
+        console.error(`Error fetching price for ${symbol}:`, err.message);
         return null;
     }
 }
@@ -117,21 +43,45 @@ async function getLivePriceData(symbol) {
  */
 async function getMultiplePricesSequentially(symbols) {
     const results = {};
-    const batchSize = 6;
+    if (!symbols || symbols.length === 0) return results;
 
-    for (let i = 0; i < symbols.length; i += batchSize) {
-        const batch = symbols.slice(i, i + batchSize);
-
-        const responses = await Promise.all(
-            batch.map(symbol => getLivePriceData(symbol))
-        );
-
-        responses.forEach((data, idx) => {
-            if (data) results[batch[idx]] = data;
+    try {
+        const yahooSymbols = symbols.map(s => {
+            const clean = s.trim().toUpperCase();
+            return clean.endsWith('.NS') ? clean : `${clean}.NS`;
         });
 
-        if (i + batchSize < symbols.length) {
-            await new Promise(r => setTimeout(r, 400)); // throttle
+        const quotes = await yahooFinance.quote(yahooSymbols);
+        const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+
+        quotesArray.forEach(quote => {
+            if (quote) {
+                const yahooSym = quote.symbol.toUpperCase();
+                const origSym = yahooSym.endsWith('.NS') ? yahooSym.slice(0, -3) : yahooSym;
+                
+                results[origSym] = {
+                    price: quote.regularMarketPrice,
+                    change: quote.regularMarketChange || 0,
+                    changePercent: quote.regularMarketChangePercent || 0,
+                    lastUpdatedAt: quote.regularMarketTime || new Date()
+                };
+            }
+        });
+
+        const missingSymbols = symbols.filter(s => !results[s.trim().toUpperCase()]);
+        for (const sym of missingSymbols) {
+            const data = await getLivePriceData(sym);
+            if (data) {
+                results[sym.trim().toUpperCase()] = data;
+            }
+        }
+    } catch (err) {
+        console.error('Error fetching multiple prices:', err.message);
+        for (const sym of symbols) {
+            const data = await getLivePriceData(sym);
+            if (data) {
+                results[sym.trim().toUpperCase()] = data;
+            }
         }
     }
 
