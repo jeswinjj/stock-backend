@@ -15,7 +15,7 @@ async function getLivePriceData(symbol) {
     try {
         const cleanSymbol = symbol.trim().toUpperCase();
         const yahooSymbol = cleanSymbol.endsWith('.NS') ? cleanSymbol : `${cleanSymbol}.NS`;
-        
+
         let result;
         try {
             result = await yahooFinance.quote(yahooSymbol);
@@ -58,7 +58,7 @@ async function getMultiplePricesSequentially(symbols) {
             if (quote) {
                 const yahooSym = quote.symbol.toUpperCase();
                 const origSym = yahooSym.endsWith('.NS') ? yahooSym.slice(0, -3) : yahooSym;
-                
+
                 results[origSym] = {
                     price: quote.regularMarketPrice,
                     change: quote.regularMarketChange || 0,

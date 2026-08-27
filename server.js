@@ -23,6 +23,7 @@ const userRoutes = require("./routes/user");
 const walletRoutes = require("./routes/wallet");
 const corporateActionRoutes = require("./routes/corporateActionRoutes");
 const adminRoutes = require("./routes/admin");
+const marketDataRoutes = require("./routes/marketData");
 const auth = require("./middleware/auth");
 const adminOnly = require("./middleware/adminOnly");
 
@@ -43,6 +44,8 @@ app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/corporate-actions", corporateActionRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/market-data", marketDataRoutes);
+
 
 // Cron Routes (for Vercel)
 const { syncNSEStocks } = require('./services/stockMasterService');

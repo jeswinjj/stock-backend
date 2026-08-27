@@ -363,4 +363,72 @@ router.delete('/:id/targets/:targetId', auth, async (req, res) => {
     }
 });
 
+// GET Stock Detail by Symbol (Quote + StockMaster + User Position)
+router.get('/:symbol/detail', auth, async (req, res) => {
+    try {
+        const rawSymbol = req.params.symbol;
+        if (!rawSymbol) {
+            return res.status(400).json({ message: 'Symbol is required' });
+        }
+
+        const symbol = rawSymbol.trim().toUpperCase();
+
+        // 1. Fetch from StockMaster or fallback
+        const master = await StockMaster.findOne({ symbol });
+        const companyName = master ? master.name : symbol;
+
+        // 2. Fetch live quote data
+        const { getLivePriceData } = require('../services/nseService');
+        const quote = await getLivePriceData(symbol);
+
+        // 3. Fetch user's holding position if any
+        const stockDoc = await Stock.findOne({ userId: req.user.id, symbol });
+
+        let position = null;
+        if (stockDoc) {
+            const currentPrice = quote?.price || stockDoc.lastPrice || 0;
+            const totalQuantity = stockDoc.totalQuantity || 0;
+            const averagePrice = stockDoc.averagePrice || 0;
+            const investedAmount = stockDoc.investedAmount || 0;
+            const currentValue = currentPrice * totalQuantity;
+            const unrealizedPL = currentValue - investedAmount;
+
+            position = {
+                id: stockDoc._id,
+                symbol: stockDoc.symbol,
+                name: stockDoc.name || companyName,
+                totalQuantity,
+                averagePrice,
+                investedAmount,
+                currentPrice,
+                currentValue,
+                unrealizedPL,
+                pnlPercentage: investedAmount > 0 ? (unrealizedPL / investedAmount) * 100 : 0,
+                realizedPL: stockDoc.realizedPL || 0,
+                targets: stockDoc.targets || [],
+                isCorporateActionAdjusted: !!stockDoc.isCorporateActionAdjusted,
+                corporateActionHistory: stockDoc.corporateActionHistory || []
+            };
+        }
+
+        res.json({
+            symbol,
+            name: companyName,
+            series: master?.series || 'EQ',
+            isin: master?.isin || null,
+            quote: quote ? {
+                price: quote.price,
+                change: quote.change,
+                changePercent: quote.changePercent,
+                lastUpdatedAt: quote.lastUpdatedAt
+            } : null,
+            position
+        });
+    } catch (err) {
+        console.error(`Error fetching detail for ${req.params.symbol}:`, err);
+        res.status(500).json({ message: err.message });
+    }
+});
+
 module.exports = router;
+
