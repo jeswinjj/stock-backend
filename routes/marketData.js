@@ -3,10 +3,12 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const { getHistoricalOHLCV } = require('../services/marketDataService');
 const { analyzeStock } = require('../services/technicalAnalysisService');
+const { getStockFundamentals } = require('../services/fundamentalAnalysisService');
+const { evaluateStockSignals } = require('../services/stockSignalService');
 
 /**
  * GET /api/market-data/:symbol/history
- * Parameters: resolution (1D, 1W, 1M, 5m, 15m, 60m), from (timestamp), to (timestamp)
+ * Parameters: resolution (1D, 1W, 1M, 5m, 15m, 60m), from (timestamp), to (timestamp), timeframe (1M, 1Y...)
  */
 router.get('/:symbol/history', auth, async (req, res) => {
     try {
@@ -57,6 +59,86 @@ router.get('/:symbol/technical-analysis', auth, async (req, res) => {
     } catch (err) {
         console.error(`Technical analysis error for ${req.params.symbol}:`, err.message);
         res.status(500).json({ error: 'Failed to compute technical analysis', details: err.message });
+    }
+});
+
+/**
+ * GET /api/market-data/:symbol/fundamentals
+ */
+router.get('/:symbol/fundamentals', auth, async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        if (!symbol) {
+            return res.status(400).json({ error: 'Symbol is required' });
+        }
+
+        const fundamentals = await getStockFundamentals(symbol);
+        res.json(fundamentals);
+    } catch (err) {
+        console.error(`Fundamental analysis error for ${req.params.symbol}:`, err.message);
+        res.status(500).json({ error: 'Failed to fetch fundamental analysis', details: err.message });
+    }
+});
+
+/**
+ * GET /api/market-data/:symbol/signals
+ */
+router.get('/:symbol/signals', auth, async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        if (!symbol) {
+            return res.status(400).json({ error: 'Symbol is required' });
+        }
+
+        const [bars, fundamentals] = await Promise.all([
+            getHistoricalOHLCV(symbol, '1D').catch(() => []),
+            getStockFundamentals(symbol).catch(() => null)
+        ]);
+
+        const technicals = bars.length > 0 ? analyzeStock(bars) : null;
+        const signals = evaluateStockSignals(technicals, fundamentals);
+
+        res.json({
+            symbol: symbol.trim().toUpperCase(),
+            ...signals
+        });
+    } catch (err) {
+        console.error(`Signal evaluation error for ${req.params.symbol}:`, err.message);
+        res.status(500).json({ error: 'Failed to evaluate stock signals', details: err.message });
+    }
+});
+
+/**
+ * GET /api/market-data/:symbol/analysis
+ * Combined Aggregation Endpoint
+ */
+router.get('/:symbol/analysis', auth, async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        if (!symbol) {
+            return res.status(400).json({ error: 'Symbol is required' });
+        }
+
+        const cleanSymbol = symbol.trim().toUpperCase();
+
+        const [bars, fundamentals] = await Promise.all([
+            getHistoricalOHLCV(cleanSymbol, '1D').catch(() => []),
+            getStockFundamentals(cleanSymbol).catch(() => null)
+        ]);
+
+        const technicals = bars.length > 0 ? analyzeStock(bars) : null;
+        const signals = evaluateStockSignals(technicals, fundamentals);
+
+        res.json({
+            symbol: cleanSymbol,
+            timestamp: new Date().toISOString(),
+            technicals,
+            fundamentals,
+            signals
+        });
+    } catch (err) {
+        console.error(`Combined stock analysis error for ${req.params.symbol}:`, err.message);
+        res.status(500).json({ error: 'Failed to perform combined stock analysis', details: err.message });
     }
 });
 
