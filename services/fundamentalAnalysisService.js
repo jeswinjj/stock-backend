@@ -168,7 +168,7 @@ async function getStockFundamentals(symbol) {
                     fetchedAt: new Date(),
                     expiresAt
                 },
-                { upsert: true, new: true }
+                { upsert: true, returnDocument: 'after' }
             );
         } catch (dbErr) {
             console.warn(`Failed to save fundamental cache for ${cleanSymbol}:`, dbErr.message);

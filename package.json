@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "node tests/technicalAnalysis.test.js && node tests/fundamentalAndSignals.test.js && node tests/stockPrediction.test.js",
+    "test": "node tests/technicalAnalysis.test.js && node tests/fundamentalAndSignals.test.js && node tests/stockPrediction.test.js && node tests/backtest.test.js",
     "start": "node server.js"
   },
   "keywords": [],
