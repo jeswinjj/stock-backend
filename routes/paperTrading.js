@@ -3,7 +3,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const PaperPortfolio = require('../models/PaperPortfolio');
 const PaperBacktestRun = require('../models/PaperBacktestRun');
-const { getHistoricalOHLCV } = require('../services/marketDataService');
+const { getHistoricalOHLCV, getIntraday3mOHLCV } = require('../services/marketDataService');
 const { runBacktest } = require('../services/backtestService');
 const config = require('../config/backtestConfig');
 
@@ -63,7 +63,17 @@ router.post('/backtest', auth, async (req, res) => {
         if (!symbol) return res.status(400).json({ error: 'A stock symbol is required' });
         if (!config.strategies[strategyKey]) return res.status(400).json({ error: 'Unsupported paper-trading strategy' });
         const portfolio = await getPortfolio(req.user.id, strategyKey);
-        const bars = await getHistoricalOHLCV(symbol, '1D', null, null, '5Y');
+        
+        let bars;
+        if (strategyKey === 'OPENING_RANGE_BREAKOUT_3M_V1') {
+            bars = await getIntraday3mOHLCV(symbol, 30);
+            if (!bars || bars.length < 2) {
+                return res.status(422).json({ error: `Insufficient 3-minute intraday data available for ${symbol}` });
+            }
+        } else {
+            bars = await getHistoricalOHLCV(symbol, '1D', null, null, '5Y');
+        }
+
         const result = runBacktest(bars, { symbol, strategyKey, initialCapital: portfolio.initialCapital });
         const run = await PaperBacktestRun.create({ userId: req.user.id, portfolioId: portfolio._id, symbol, ...result });
         portfolio.cash = result.cash; portfolio.finalEquity = result.finalEquity; portfolio.latestRun = run._id; portfolio.updatedAt = new Date();

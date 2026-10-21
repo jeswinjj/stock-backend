@@ -152,7 +152,109 @@ async function getHistoricalOHLCV(symbol, resolution = '1D', from = null, to = n
     }
 }
 
+/**
+ * Aggregates 1-minute OHLCV quotes into standard 3-minute candles aligned to NSE market session (09:15 - 15:30 IST)
+ */
+function aggregate1mTo3m(quotes) {
+    if (!Array.isArray(quotes)) return [];
+    const candles3m = [];
+    let currentBucket = null;
+    let bucketKey = null;
+
+    for (const q of quotes) {
+        if (!q || !q.date || isNaN(q.close)) continue;
+        const d = new Date(q.date);
+        // IST offset: +5:30 (5.5 * 3600 * 1000 ms)
+        const istMs = d.getTime() + 5.5 * 3600 * 1000;
+        const istDate = new Date(istMs);
+        const dayStr = istDate.toISOString().slice(0, 10);
+        const hours = istDate.getUTCHours();
+        const mins = istDate.getUTCMinutes();
+        
+        // 9:15 AM IST is minute 555 from midnight, 3:30 PM is 930
+        const totalMins = hours * 60 + mins;
+        if (totalMins < 555 || totalMins >= 930) continue;
+
+        const bucketIndex = Math.floor((totalMins - 555) / 3);
+        const currentKey = dayStr + '_' + bucketIndex;
+
+        const openVal = Number(q.open ?? q.close);
+        const highVal = Number(q.high ?? Math.max(openVal, q.close));
+        const lowVal = Number(q.low ?? Math.min(openVal, q.close));
+        const closeVal = Number(q.close);
+        const volVal = Number(q.volume || 0);
+
+        if (bucketKey !== currentKey) {
+            if (currentBucket) candles3m.push(currentBucket);
+            bucketKey = currentKey;
+            currentBucket = {
+                day: dayStr,
+                bucketIndex,
+                date: q.date,
+                timestamp: d.getTime(),
+                time: Math.floor(d.getTime() / 1000),
+                istTime: `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`,
+                open: openVal,
+                high: highVal,
+                low: lowVal,
+                close: closeVal,
+                volume: volVal
+            };
+        } else {
+            currentBucket.high = Math.max(currentBucket.high, highVal);
+            currentBucket.low = Math.min(currentBucket.low, lowVal);
+            currentBucket.close = closeVal;
+            currentBucket.volume += volVal;
+        }
+    }
+    if (currentBucket) candles3m.push(currentBucket);
+    return candles3m;
+}
+
+/**
+ * Fetches 3-minute OHLCV intraday data for an NSE stock symbol
+ * Uses parallel 7-day chunk requests to Yahoo Finance 1m chart API and aggregates into 3m candles
+ */
+async function getIntraday3mOHLCV(symbol, days = 30) {
+    try {
+        if (!symbol || typeof symbol !== 'string') {
+            throw new Error('Symbol is required');
+        }
+
+        const cleanSymbol = symbol.trim().toUpperCase();
+        const yahooSymbol = cleanSymbol.endsWith('.NS') ? cleanSymbol : `${cleanSymbol}.NS`;
+
+        const now = Date.now();
+        const chunkCount = Math.min(4, Math.ceil(days / 7));
+        const promises = [];
+
+        for (let i = chunkCount; i >= 1; i--) {
+            const period1 = new Date(now - i * 7 * 86400000);
+            const period2 = new Date(now - (i - 1) * 7 * 86400000);
+            promises.push(
+                yahooFinance.chart(yahooSymbol, { period1, period2, interval: '1m' })
+                    .catch(() => yahooFinance.chart(cleanSymbol, { period1, period2, interval: '1m' }))
+                    .catch(() => null)
+            );
+        }
+
+        const results = await Promise.all(promises);
+        const allQuotes = results
+            .filter(Boolean)
+            .flatMap(r => r.quotes || [])
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        return aggregate1mTo3m(allQuotes);
+    } catch (err) {
+        console.error(`Error in getIntraday3mOHLCV for ${symbol}:`, err.message);
+        throw err;
+    }
+}
+
 module.exports = {
     getHistoricalOHLCV,
+    getIntraday3mOHLCV,
+    aggregate1mTo3m,
     mapResolutionToInterval
 };
+
