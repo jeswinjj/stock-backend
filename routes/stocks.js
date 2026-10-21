@@ -47,7 +47,7 @@ router.get('/', auth, async (req, res) => {
             const currentPrice = stock.lastPrice || 0;
             const totalQuantity = stock.totalQuantity || 0;
             const averagePrice = stock.averagePrice || 0;
-            const investedAmount = stock.investedAmount || 0;
+            const investedAmount = stock.investedAmount || (averagePrice * totalQuantity) || 0;
             const unrealizedPL = (currentPrice - averagePrice) * totalQuantity;
 
             return {
@@ -86,6 +86,9 @@ router.get('/', auth, async (req, res) => {
             } else if (sort === 'ltp') {
                 valA = a.currentPrice;
                 valB = b.currentPrice;
+            } else if (sort === 'invested_amount' || sort === 'investedAmount') {
+                valA = a.investedAmount;
+                valB = b.investedAmount;
             }
 
             if (valA === undefined) valA = '';
